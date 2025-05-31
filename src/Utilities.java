@@ -23,4 +23,8 @@ public class Utilities {
         }
         return s.matches(("[^\\w\\s]+"));
     }
+    public static boolean isBoolean(String s){
+
+        return s.equalsIgnoreCase("true") || s.equalsIgnoreCase("false");
+    }
 }
