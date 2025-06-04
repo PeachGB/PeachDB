@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+
 class Node {
     private enum Type{
         IDENTIFIER,
@@ -35,6 +36,18 @@ class Node {
         this.right = right;
         type_check();
     }
+    boolean isIdentifier(){
+        return type == Type.IDENTIFIER;
+    }
+    boolean isNumber(){
+        return type == Type.NUMBER;
+    }
+    boolean isOperator(){
+        return type == Type.OPERATOR;
+    }
+    boolean isBoolean(){
+        return type == Type.BOOLEAN;
+    }
 }
 public class Parser {
 
@@ -58,8 +71,15 @@ public class Parser {
 
     public void parse(String input) {
         buffer = input;
-        lex();
+        if (buffer.isEmpty()){
+            //todo: make a help print
+            System.out.println("Empty input");
 
+        }else{
+
+            lex();
+            interpret();
+        }
 
     }
     private void setOrder(){
@@ -82,9 +102,45 @@ public class Parser {
         setOrder();
 
     }
+    private void interpret(){
+        if (!tokens[0].isIdentifier()){
+            System.out.println("PROVIDE ONE OF THE FOLLOWING KEYWORDS\n" +
+                    "-SELECT\n"+
+                    "-INSERT\n"+
+                    "-UPDATE\n"+
+                    "-DELETE\n"+
+                    "-CREATE\n");
+
+        } else{
+            switch (tokens[0].value){
+                case "SELECT":
+                    System.out.println("SELECT");
+                    break;
+                case "INSERT":
+                    System.out.println("INSERT");
+                    break;
+                case "UPDATE":
+                    System.out.println("UPDATE");
+                    break;
+                case "DELETE":
+                    System.out.println("DELETE");
+                    break;
+                case "CREATE":
+                    System.out.println("CREATE");
+                    break;
+            }
+
+        }
 
 
-}
+
+
+        }
+    }
+
+
+
+
 
 
 enum SQLKeyword {
@@ -167,5 +223,6 @@ enum SQLKeyword {
     public String toString() {
         return this.name();
     }
+
 
 }
