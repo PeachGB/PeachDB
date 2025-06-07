@@ -105,28 +105,24 @@ public class Parser {
     private void interpret(){
         if (!tokens[0].isIdentifier()){
             System.out.println("PROVIDE ONE OF THE FOLLOWING KEYWORDS\n" +
-                    "-SELECT\n"+
-                    "-INSERT\n"+
-                    "-UPDATE\n"+
-                    "-DELETE\n"+
-                    "-CREATE\n");
+                    "-GET\n"+
+                    "-PUT\n"+
+                    "-WRITE\n"+
+                    "-DELETE\n");
 
         } else{
             switch (tokens[0].value){
-                case "SELECT":
-                    System.out.println("SELECT");
+                case "GET":
+                    System.out.println("GET");
                     break;
-                case "INSERT":
-                    System.out.println("INSERT");
+                case "PUT":
+                    System.out.println("PUT");
                     break;
-                case "UPDATE":
-                    System.out.println("UPDATE");
+                case "WRITE":
+                    System.out.println("WRITE");
                     break;
                 case "DELETE":
                     System.out.println("DELETE");
-                    break;
-                case "CREATE":
-                    System.out.println("CREATE");
                     break;
             }
 
@@ -143,86 +139,3 @@ public class Parser {
 
 
 
-enum SQLKeyword {
-    // Base Keywords
-    SELECT,
-    FROM,
-    WHERE,
-    INSERT,
-    INTO,
-    VALUES,
-    UPDATE,
-    SET,
-    DELETE,
-
-    // Joins
-    JOIN,
-    INNER,
-    LEFT,
-    RIGHT,
-    FULL,
-    OUTER,
-
-    // Group and Order
-    GROUP,
-    BY,
-    HAVING,
-    ORDER,
-    ASC,
-    DESC,
-
-    // Logical Operators
-    AND,
-    OR,
-    NOT,
-    IN,
-    BETWEEN,
-    LIKE,
-    IS,
-    NULL,
-
-    // Aggregator Funcs
-    COUNT,
-    SUM,
-    AVG,
-    MAX,
-    MIN,
-
-    // DDL (Data Definition Language)
-    CREATE,
-    ALTER,
-    DROP,
-    TRUNCATE,
-    TABLE,
-    INDEX,
-    VIEW,
-
-    // Constraints
-    PRIMARY,
-    KEY,
-    FOREIGN,
-    UNIQUE,
-    CHECK,
-    DEFAULT,
-
-    // Transactions
-    COMMIT,
-    ROLLBACK,
-    BEGIN,
-    TRANSACTION,
-
-    // Others
-    UNION,
-    ALL,
-    DISTINCT,
-    AS,
-    ON,
-    WITH;
-
-    @Override
-    public String toString() {
-        return this.name();
-    }
-
-
-}
