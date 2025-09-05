@@ -1,10 +1,13 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::io::SeekFrom;
+use std::{collections::HashMap,
+error::Error,
+io::SeekFrom};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+pub trait Writeable{
+    async fn write_to(&self, file: &mut MutexGuard<'_, File>) -> Result<(), Box<dyn Error>>;
+}
 
 #[derive(Clone)]
 pub enum Primitive{
@@ -25,26 +28,31 @@ impl Primitive {
 
     }
 
+}
+
+impl Writeable for Primitive{
     async fn write_to(&self, file: &mut MutexGuard<'_, File>) -> Result<(), Box<dyn Error>>{
+        file.seek(SeekFrom::End(0)).await?;
         match self{
             Primitive::Integer(n) =>{
                 file.write_i64(*n).await?;
             }
             Primitive::Boolean(bool) => {
-                
+                file.write_u8(*bool as u8).await?;
             }
             Primitive::String(buffer) => {
-                
+                file.write_u8(buffer.len() as u8).await?;
+                for c in buffer.iter() {
+                    file.write_u8(*c as u8).await?;
+                }
             }
             Primitive::Float(f) => {
-                
+                file.write_f64(*f).await?;
             }
-            
         }
         Ok(())
     }
 }
-
 
 pub enum Dtype{
     Integer,
@@ -84,7 +92,37 @@ pub enum Field {
     Primitive(Primitive),
     Map(HashMap<[char;16], Primitive>),
     Array([Primitive; 1024])
+}
+impl Writeable for Field {
+    async fn write_to(&self, file: &mut MutexGuard<'_, File>) -> Result<(), Box<dyn Error>> {
+        file.seek(SeekFrom::End(0)).await?;
+        match self {
+            Field::Primitive(p) => {
+                p.write_to(file).await?;
+            }
+            Field::Map(m) => {
+                for (k,v) in m.iter() {
+                    file.write_u8('K' as u8).await?;
+                    file.write_u8('E' as u8).await?;
+                    file.write_u8('Y' as u8).await?;
+                    file.write_u8('F' as u8).await?;
+                    for i in 0..k.len() {
+                        file.write_u8(k[i] as u8).await?;
+                    }
+                    v.write_to(file).await?;
+                }
+            }
+            Field::Array(a) => {
+                for v in a.iter() {
+                    v.write_to(file).await?;
+                }
+            }
+        }
+        Ok(())
+    }
 
+
+    
 }
 impl Field {
     pub fn size(&self) -> u32{
@@ -123,7 +161,7 @@ pub struct DataBase{
     name: [char; 16],
     fields: Mutex<HashMap<[char;16], Field>>,
     file: Mutex<File>,
-    index: Mutex<HashMap<String,u64>>
+    index: Mutex<HashMap<[u8; 16],u64>>
 }
 impl DataBase {
 
@@ -152,11 +190,11 @@ impl DataBase {
             file.write_u8(n[i] as u8).await?;
         }
         
-        let mut index = HashMap::new();
-        index.insert("Header".to_string(), header);
-        index.insert("version".to_string(), version);
-        index.insert("record_count".to_string(), record_count);
-        index.insert("db_name".to_string(), db_name);
+        let mut index:HashMap<[u8;16], u64> = HashMap::new();
+        index.insert(*b"Header          ", header);
+        index.insert(*b"version         ", version);
+        index.insert(*b"record_count    ", record_count);
+        index.insert(*b"db_name         ", db_name);
         
         
         Ok(DataBase{
@@ -175,7 +213,7 @@ impl DataBase {
         let current = file.stream_position().await?;
         let field_type = value.dtype().as_byte();
         let field_size = value.size();
-        let id = key.clone().iter().collect::<String>();
+        let id = key.clone().map(|c| c as u8) ;
         index.insert(id, current);
         fields.insert(key, value.clone());
         
@@ -189,10 +227,15 @@ impl DataBase {
         file.write_u8(field_type).await?;
         file.write_u32(field_size).await?;
         
-        match value {
-            Field::Primitive(a) =>{
-                a.write_to(&mut file)
-            }
+        value.write_to(&mut file).await?;
+        
+        file.write_u8('E' as u8).await?;
+        file.write_u8('N' as u8).await?;
+        file.write_u8('D' as u8).await?;
+        file.write_u8(' ' as u8).await?;
+        
+        Ok(())
+        
         }
 
 
@@ -202,13 +245,11 @@ impl DataBase {
 
 
 
-        Ok(())
-    }
     pub async fn update_record_count_(&mut self) -> Result<(), Box<dyn Error>>{
         let mut file = self.file.lock().await;
         let mut current = file.stream_position().await?;
         let mut index = self.index.lock().await;
-        file.seek(SeekFrom::Start(index["record_count"])).await?;
+        file.seek(SeekFrom::Start(index[b"record_count    "])).await?;
         let count = file.read_u64().await?;
         file.write_u64(count + 1).await?;
         file.seek(SeekFrom::Start(current)).await?;
