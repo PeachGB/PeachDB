@@ -1,5 +1,9 @@
 mod db;
-mod interface;
+mod dtypes;
+mod error;
+mod server;
+#[cfg(test)]
+mod tests;
 
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
