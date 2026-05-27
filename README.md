@@ -29,7 +29,7 @@ Known limitations / TODO
 - Several unwrap/expect usages remain; many call sites need proper PeachDbError conversion.
 - No unit tests for codec or persistence yet.
 
-Next steps (recommended)
+Next steps 
 - Harmonize field/primitive types across the crate (remove legacy char-array code).
 - Add unit tests for codec round-trips and WAL replay.
 - Implement atomic index replacement and durable flush (fsync) for safety.

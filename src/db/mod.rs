@@ -1,7 +1,9 @@
 mod codec;
 mod db;
 mod wal;
+pub use codec::*;
 pub use db::*;
+pub use wal::*;
 
 pub struct DbMeta {
     pub version: u8,

@@ -63,7 +63,7 @@ pub enum PeachDbError {
     DBNameToLong,
     /// Key does not exist in the database.
     #[error("key not found")]
-    KeyNotFoundt,
+    KeyNotFound,
 
     /// Type mismatch when reading a value (e.g., GET on wrong type).
     #[error("type mismatch for key '{key}': expected {expected}, found {found}")]

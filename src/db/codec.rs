@@ -79,7 +79,8 @@ pub fn bytes_from_field(f: &Field) -> Vec<u8> {
         Field::Array(dt, array) => {
             let mut array_as_bytes = Vec::new();
             let count = array.len() as u32;
-            array_as_bytes.push(dt.as_byte());
+            // first byte: Array dtype marker with inner dtype encoded in low nibble
+            array_as_bytes.push(Dtype::Array(dt.as_byte()).as_byte());
             array_as_bytes.extend_from_slice(&count.to_le_bytes());
             for item in array.iter() {
                 array_as_bytes.extend_from_slice(&bytes_from_primitive(item));
@@ -257,6 +258,29 @@ impl DBEncoder {
     }
     pub fn finish(&self) -> &[u8] {
         &self.buffer
+    }
+}
+
+/// Convenience wrapper to encode a single key/field record into bytes
+pub fn encode(key: &Key, field: &Field) -> Vec<u8> {
+    let payload = bytes_from_field(field);
+    let mut enc = DBEncoder::with_capacity(
+        RECORD_MAGIC_NUMBER_BYTE_SIZE + KEY_LEN_BYTE_SIZE + FIELD_LEN_BYTE_SIZE + key.len() + payload.len(),
+    );
+    enc.encode_db_key_field_pair(key, field);
+    enc.finish().to_vec()
+}
+
+/// Convenience wrapper to decode a single key/field record from bytes
+pub fn decode(bytes: &[u8]) -> PDBResult<(Key, Field)> {
+    let mut dec = DBDecoder::new(bytes);
+    dec.decode_db_key_field_pair()?;
+    // consume db and return the first entry
+    let mut iter = dec.db.into_iter();
+    if let Some((k, v)) = iter.next() {
+        Ok((k, v))
+    } else {
+        Err(PeachDbError::InvalidFinishCall)
     }
 }
 

@@ -140,7 +140,7 @@ impl Database {
         let state = self.state.read().await;
         match state.fields.contains_key(key) {
             true => {
-                let field = state.fields.get(key).unwrap();
+                let field = state.fields.get(key).unwrap_or_else(|| unreachable!());
                 Ok(field.clone())
             }
             false => {
@@ -176,7 +176,6 @@ impl Database {
         let mut encoder = DBEncoder::new();
         let mut deleter = DBDeleter::new();
         let mut file = self.file.lock().await;
-        let mut index_file = self.index_file.lock().await;
         let mut state = self.state.write().await;
         let initial_offset = file.seek(SeekFrom::End(0)).await?;
         let mut offsets: Vec<(Key, u64)> = Vec::new();
@@ -200,7 +199,7 @@ impl Database {
                         .get_deleted_field()
                         .finish();
                     file.seek(SeekFrom::Start(pos.clone())).await?;
-                    file.write_all(deleted);
+                    file.write_all(deleted).await?;
                     deleter.reset();
                 }
                 Commit => unreachable!(),
@@ -211,10 +210,11 @@ impl Database {
             file.write_all(encoder.finish()).await?;
         }
 
-        file.flush().await;
+        file.flush().await?;
         for (k, i) in offsets.into_iter() {
             state.index.insert(k, i);
         }
+        drop(state);
         self.rebuild_index().await?;
 
         Ok(())
@@ -226,7 +226,7 @@ impl Database {
         let mut index_file = self.index_file.lock().await;
         encoder.encode_index_file(index);
         index_file.seek(SeekFrom::Start(0)).await?;
-        index_file.write_all(encoder.finish());
+        index_file.write_all(encoder.finish()).await?;
         index_file.flush().await?;
 
         Ok(())
