@@ -62,8 +62,8 @@ pub enum PeachDbError {
     #[error("DataBase Name to long; must be less than 64 Bytes")]
     DBNameToLong,
     /// Key does not exist in the database.
-    #[error("key not found: {key}")]
-    KeyNotFound,
+    #[error("key not found")]
+    KeyNotFoundt,
 
     /// Type mismatch when reading a value (e.g., GET on wrong type).
     #[error("type mismatch for key '{key}': expected {expected}, found {found}")]
