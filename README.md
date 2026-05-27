@@ -1,53 +1,44 @@
 # PeachDB
 
-PeachDB is a work-in-progress database prototype written in Rust with Tokio.
+PeachDB is a work-in-progress key/value database prototype written in Rust (Tokio).
+This README reflects the current development state — the project is experimental.
 
-It currently explores:
-- file-backed storage
-- an in-memory field cache
-- a persisted index file
-- loading records back from disk
-- a small public wrapper API on top of the storage layer
+Goals
+- Small, embeddable file-backed KV store
+- Simple on-disk layout with a separate index file
+- Fast in-memory field cache and async API surface
 
-## Current status
+What's implemented 
+- Core storage with data file and persisted index (index file is truncated and rewritten on update).
+- In-memory Fields map protected by tokio::Mutex.
+- Codec refactor: serialization moved into `src/db/codec.rs`; Fields now include the Dtype as the first byte of their payload.
+- Unified error enum at `src/error.rs` (thiserror-based).
+- Thin public wrapper at `src/interface.rs` (open/get/insert/persist/flush/close).
+- Basic WAL encoder/decoder skeleton and some WAL helpers (partial).
 
-This project is **not production-ready** yet. The codebase is still in an early prototyping phase and the storage format is still evolving.
+What works today
+- Create/open database files
+- Insert into in-memory cache and persist entries to disk (append + index update)
+- Load index and reload records into memory
+- Encode/decode primitives and fields (round-trip in-progress)
 
-## Project structure
+Known limitations / TODO
+- Not crash-safe: no atomic index swap (temp file + rename) or reliable fsyncs yet.
+- WAL replay is incomplete; replay and commit semantics need work.
+- Some modules are still missing or inconsistent (server/protocol, legacy type representations).
+- Several unwrap/expect usages remain; many call sites need proper PeachDbError conversion.
+- No unit tests for codec or persistence yet.
 
-- `src/db.rs`  
-  Core storage engine, record encoding, index handling, loading, and persistence.
+Next steps (recommended)
+- Harmonize field/primitive types across the crate (remove legacy char-array code).
+- Add unit tests for codec round-trips and WAL replay.
+- Implement atomic index replacement and durable flush (fsync) for safety.
+- Finish WAL replay and integrate with startup recovery.
+- Clean up module layout and fix remaining compiler warnings/errors.
 
-- `src/interface.rs`  
-  Public-facing wrapper around the database backend.
+Using the prototype
+- cargo check (may fail until remaining modules are completed)
+- Use `src/interface.rs::Database` as the public entry point (open/insert/persist/get/flush).
 
-- `src/main.rs`  
-  Temporary entry point used while the prototype is being shaped.
-
-## What works today
-
-- opening or creating the database files
-- keeping records in memory
-- persisting records to disk
-- maintaining an index file
-- reloading persisted records
-
-## Known limitations
-
-- the record format is still experimental
-- complex field types are not fully supported on load yet
-- error handling is still rough in places
-- the network/server entry point is only a placeholder
-- APIs may change without notice while the prototype evolves
-
-## Planned direction
-
-- stabilize the file format
-- improve error handling
-- finish the public API
-- add a real entry point or server layer
-- document supported field types and record lifecycle
-
-## Notes
-
-This repository is intentionally changing fast. Expect internal APIs and on-disk format details to shift while the prototype is being refined.
+Contributing
+All contributions welcome — open issues or send PRs. This repository is evolving rapidly; breaking changes are expected.
