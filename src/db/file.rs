@@ -6,6 +6,8 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+use crate::error::PeachDbError;
+
 enum FileCmd {
     ReadAt {
         pos: u64,
@@ -164,4 +166,8 @@ impl FileHandler {
         self.tx.send(FileCmd::Close).await?;
         Ok(())
     }
+}
+
+pub fn map_file_handler_error(err: Box<dyn Error + Send + Sync>) -> PeachDbError {
+    PeachDbError::Io(std::io::Error::other(err.to_string()))
 }

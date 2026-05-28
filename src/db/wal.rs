@@ -3,7 +3,7 @@ use std::{error::Error, path::Path};
 use crate::{
     db::{
         codec::{WalDecoder, WalEncoder},
-        file::FileHandler,
+        file::{FileHandler, map_file_handler_error},
     },
     dtypes::{Field, Key, PDBResult},
     error::PeachDbError,
@@ -60,11 +60,7 @@ impl WAL {
         Ok(())
     }
     pub async fn replay(&mut self) -> PDBResult<&[WalEntry]> {
-        let file_buffer = self
-            .file
-            .read_all()
-            .await
-            .map_err(map_file_handler_error)?;
+        let file_buffer = self.file.read_all().await.map_err(map_file_handler_error)?;
         let mut decoder = WalDecoder::new(&file_buffer);
         self.entries = {
             decoder.decode_wal_entries()?;
@@ -90,8 +86,4 @@ impl WAL {
         uncommited.reverse();
         Ok(uncommited)
     }
-}
-
-fn map_file_handler_error(err: Box<dyn Error + Send + Sync>) -> PeachDbError {
-    PeachDbError::Io(std::io::Error::other(err.to_string()))
 }

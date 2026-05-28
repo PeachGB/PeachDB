@@ -121,10 +121,10 @@ impl Database {
         };
         let file = FileHandler::spawn(file)
             .await
-            .map_err(|e| PeachDbError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(map_file_handler_error)?;
         let index_file = FileHandler::spawn(index_file)
             .await
-            .map_err(|e| PeachDbError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(map_file_handler_error)?;
 
         Ok(Database {
             state: Arc::new(RwLock::new(State {
