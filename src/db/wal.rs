@@ -1,9 +1,14 @@
-use std::path::Path;
+use std::{error::Error, path::Path};
 
-use crate::db::codec::{WalDecoder, WalEncoder};
-use crate::dtypes::{Field, Key, PDBResult};
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use crate::{
+    db::{
+        codec::{WalDecoder, WalEncoder},
+        file::FileHandler,
+    },
+    dtypes::{Field, Key, PDBResult},
+    error::PeachDbError,
+};
+use tokio::fs::OpenOptions;
 
 #[derive(Clone)]
 pub enum WalEntry {
@@ -23,7 +28,7 @@ impl WalEntry {
 }
 
 pub struct WAL {
-    file: File,
+    file: FileHandler,
     entries: Vec<WalEntry>,
 }
 impl WAL {
@@ -35,25 +40,31 @@ impl WAL {
             .append(true)
             .open(path)
             .await?;
+        let file = FileHandler::spawn(file)
+            .await
+            .map_err(map_file_handler_error)?;
         let entries = Vec::new();
         let mut wal = WAL { file, entries };
         wal.replay().await?;
         Ok(wal)
     }
     pub async fn append_entry(&mut self, entry: WalEntry) -> PDBResult<()> {
-        let file = &mut self.file;
         let mut encoder = WalEncoder::new();
-        let bytes = encoder.encode_wal_entry(&entry).finish();
-        file.write_all(bytes).await?;
+        let bytes = encoder.encode_wal_entry(&entry).finish().to_vec();
+        self.file
+            .append(bytes)
+            .await
+            .map_err(map_file_handler_error)?;
         self.entries.push(entry);
-        file.flush().await?;
+        self.file.sync_all().await.map_err(map_file_handler_error)?;
         Ok(())
     }
     pub async fn replay(&mut self) -> PDBResult<&[WalEntry]> {
-        let file = &mut self.file;
-        let mut file_buffer = Vec::new();
-        file.seek(std::io::SeekFrom::Start(0)).await?;
-        file.read_to_end(&mut file_buffer).await?;
+        let file_buffer = self
+            .file
+            .read_all()
+            .await
+            .map_err(map_file_handler_error)?;
         let mut decoder = WalDecoder::new(&file_buffer);
         self.entries = {
             decoder.decode_wal_entries()?;
@@ -63,8 +74,8 @@ impl WAL {
     }
     pub async fn checkpoint(&mut self) -> PDBResult<()> {
         self.entries.clear();
-        self.file.set_len(0).await?;
-        self.file.seek(std::io::SeekFrom::Start(0)).await?;
+        self.file.set_len(0).await.map_err(map_file_handler_error)?;
+        self.file.sync_all().await.map_err(map_file_handler_error)?;
         Ok(())
     }
     pub async fn pop_uncommited_entries(&self) -> PDBResult<Vec<WalEntry>> {
@@ -79,4 +90,8 @@ impl WAL {
         uncommited.reverse();
         Ok(uncommited)
     }
+}
+
+fn map_file_handler_error(err: Box<dyn Error + Send + Sync>) -> PeachDbError {
+    PeachDbError::Io(std::io::Error::other(err.to_string()))
 }

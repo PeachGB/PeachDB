@@ -1,5 +1,6 @@
 mod codec;
 mod db;
+mod file;
 mod wal;
 pub use codec::*;
 pub use db::*;

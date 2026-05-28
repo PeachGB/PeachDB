@@ -1,5 +1,5 @@
 use crate::{
-    db::{DbMeta, wal::WalEntry},
+    db::{DbMeta, IndexEntry, wal::WalEntry},
     dtypes::{Dtype, FIELD_LEN_BYTE_SIZE, Field, KEY_LEN_BYTE_SIZE, Key, PDBResult, Primitive},
     error::PeachDbError,
 };
@@ -265,7 +265,11 @@ impl DBEncoder {
 pub fn encode(key: &Key, field: &Field) -> Vec<u8> {
     let payload = bytes_from_field(field);
     let mut enc = DBEncoder::with_capacity(
-        RECORD_MAGIC_NUMBER_BYTE_SIZE + KEY_LEN_BYTE_SIZE + FIELD_LEN_BYTE_SIZE + key.len() + payload.len(),
+        RECORD_MAGIC_NUMBER_BYTE_SIZE
+            + KEY_LEN_BYTE_SIZE
+            + FIELD_LEN_BYTE_SIZE
+            + key.len()
+            + payload.len(),
     );
     enc.encode_db_key_field_pair(key, field);
     enc.finish().to_vec()
@@ -575,10 +579,11 @@ impl<'a> WalDecoder<'a> {
 
 pub struct IndexDecoder<'a> {
     cursor: Cursor<&'a [u8]>,
-    index: HashMap<Key, u64>,
+    index: HashMap<Key, IndexEntry>,
     last_index_key: Vec<u8>,
     last_idx: u64,
-    last_key_len: usize,
+    last_key_len: u16,
+    last_field_len: u32,
 }
 
 impl<'a> IndexDecoder<'a> {
@@ -589,6 +594,7 @@ impl<'a> IndexDecoder<'a> {
             last_index_key: Vec::new(),
             last_idx: 0,
             last_key_len: 0,
+            last_field_len: 0,
         }
     }
 
@@ -599,19 +605,31 @@ impl<'a> IndexDecoder<'a> {
     }
     fn read_key_len(&mut self) -> PDBResult<&mut Self> {
         let key_len = self.cursor.read_u16::<LittleEndian>()?;
-        self.last_key_len = key_len as usize;
+        self.last_key_len = key_len;
         Ok(self)
     }
     fn read_key(&mut self) -> PDBResult<&mut Self> {
-        let mut key = vec![0u8; self.last_key_len];
+        let mut key = vec![0u8; self.last_key_len as usize];
         self.cursor.read_exact(&mut key)?;
         self.last_index_key = key;
         Ok(self)
     }
+    fn read_field_len(&mut self) -> PDBResult<&mut Self> {
+        self.last_field_len = self.cursor.read_u32::<LittleEndian>()?;
+        Ok(self)
+    }
     fn decode_index_entry(&mut self) -> PDBResult<&mut Self> {
-        self.read_key_len()?.read_key()?.read_index()?;
+        self.read_key_len()?
+            .read_key()?
+            .read_field_len()?
+            .read_index()?;
+        let entry = IndexEntry {
+            offset: self.last_idx,
+            key_len: self.last_key_len,
+            field_len: self.last_field_len,
+        };
         self.index
-            .insert(Key::from(self.last_index_key.clone()), self.last_idx);
+            .insert(Key::from(self.last_index_key.clone()), entry);
         Ok(self)
     }
     pub fn decode_index_file(&mut self) -> PDBResult<&mut Self> {
@@ -620,13 +638,13 @@ impl<'a> IndexDecoder<'a> {
         }
         Ok(self)
     }
-    pub fn finish(self) -> PDBResult<HashMap<Key, u64>> {
+    pub fn finish(self) -> PDBResult<HashMap<Key, IndexEntry>> {
         Ok(self.index)
     }
 }
 pub struct IndexFromDBDecoder<'a> {
     cursor: Cursor<&'a [u8]>,
-    index: HashMap<Key, u64>,
+    index: HashMap<Key, IndexEntry>,
     last_key_len: u16,
     last_field_len: u32,
     last_key: Vec<u8>,
@@ -713,8 +731,12 @@ impl<'a> IndexFromDBDecoder<'a> {
         if self.last_key.is_empty() {
             return Err(PeachDbError::InvalidIndexEntry);
         }
-        self.index
-            .insert(Key::from(self.last_key.clone()), self.last_index);
+        let entry = IndexEntry {
+            key_len: self.last_key_len,
+            offset: self.last_index,
+            field_len: self.last_field_len,
+        };
+        self.index.insert(Key::from(self.last_key.clone()), entry);
 
         Ok(self)
     }
@@ -732,7 +754,7 @@ impl<'a> IndexFromDBDecoder<'a> {
         }
         Ok(self)
     }
-    pub fn finish(self) -> PDBResult<HashMap<Key, u64>> {
+    pub fn finish(self) -> PDBResult<HashMap<Key, IndexEntry>> {
         Ok(self.index)
     }
 }
@@ -751,17 +773,22 @@ impl IndexEncoder {
     fn encode_key_len(&mut self, len: u16) -> &mut Self {
         self.write(&len.to_le_bytes())
     }
+    fn encode_field_len(&mut self, len: u32) -> &mut Self {
+        self.write(&len.to_le_bytes())
+    }
     fn encode_key(&mut self, key: &Key) -> &mut Self {
-        self.encode_key_len(key.len() as u16);
         self.write(key.as_bytes())
     }
     fn encode_index(&mut self, idx: u64) -> &mut Self {
         self.write(&idx.to_le_bytes())
     }
-    fn encode_index_entry(&mut self, key: &Key, idx: u64) -> &mut Self {
-        self.encode_key(key).encode_index(idx)
+    fn encode_index_entry(&mut self, key: &Key, index: IndexEntry) -> &mut Self {
+        self.encode_key_len(index.key_len)
+            .encode_key(key)
+            .encode_field_len(index.field_len)
+            .encode_index(index.offset)
     }
-    pub fn encode_index_file(&mut self, index: &HashMap<Key, u64>) -> &mut Self {
+    pub fn encode_index_file(&mut self, index: &HashMap<Key, IndexEntry>) -> &mut Self {
         for (key, idx) in index.iter() {
             self.encode_index_entry(key, idx.clone());
         }

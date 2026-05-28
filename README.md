@@ -1,44 +1,37 @@
 # PeachDB
 
-PeachDB is a work-in-progress key/value database prototype written in Rust (Tokio).
-This README reflects the current development state — the project is experimental.
+PeachDB is a work-in-progress key/value database prototype written in Rust with Tokio.
 
-Goals
+## Goals
 - Small, embeddable file-backed KV store
-- Simple on-disk layout with a separate index file
-- Fast in-memory field cache and async API surface
+- Separate on-disk data, index, and WAL files
+- Async API with a simple public surface
 
-What's implemented 
-- Core storage with data file and persisted index (index file is truncated and rewritten on update).
-- In-memory Fields map protected by tokio::Mutex.
-- Codec refactor: serialization moved into `src/db/codec.rs`; Fields now include the Dtype as the first byte of their payload.
-- Unified error enum at `src/error.rs` (thiserror-based).
-- Thin public wrapper at `src/interface.rs` (open/get/insert/persist/flush/close).
-- Basic WAL encoder/decoder skeleton and some WAL helpers (partial).
+## Current state
+- Core storage is implemented.
+- `FileHandler` wraps file I/O for `.db`, `.dbidx`, and `.wal`.
+- Codec lives in `src/db/codec.rs`.
+- `Field` payloads now start with the `Dtype` byte.
+- Unified error type lives in `src/error.rs`.
+- Thin public wrapper lives in `src/interface.rs`.
+- Unit tests exist under `src/tests/`.
 
-What works today
+## What works
 - Create/open database files
-- Insert into in-memory cache and persist entries to disk (append + index update)
-- Load index and reload records into memory
-- Encode/decode primitives and fields (round-trip in-progress)
+- Insert, get, delete, flush, and reopen data
+- Persist WAL entries and rebuild the index
+- Encode/decode primitives, fields, WAL entries, and index entries
+- Run the current test suite successfully
 
-Known limitations / TODO
-- Not crash-safe: no atomic index swap (temp file + rename) or reliable fsyncs yet.
-- WAL replay is incomplete; replay and commit semantics need work.
-- Some modules are still missing or inconsistent (server/protocol, legacy type representations).
-- Several unwrap/expect usages remain; many call sites need proper PeachDbError conversion.
-- No unit tests for codec or persistence yet.
+## Known limitations
+- Not crash-safe yet; durability can still be improved.
+- WAL recovery semantics still need hardening.
+- Some helpers and imports are still unused.
+- The public API is still experimental and may change.
 
-Next steps 
-- Harmonize field/primitive types across the crate (remove legacy char-array code).
-- Add unit tests for codec round-trips and WAL replay.
-- Implement atomic index replacement and durable flush (fsync) for safety.
-- Finish WAL replay and integrate with startup recovery.
-- Clean up module layout and fix remaining compiler warnings/errors.
+## Using it
+- `cargo test`
+- `src/interface.rs::Database` is the main entry point
 
-Using the prototype
-- cargo check (may fail until remaining modules are completed)
-- Use `src/interface.rs::Database` as the public entry point (open/insert/persist/get/flush).
-
-Contributing
-All contributions welcome — open issues or send PRs. This repository is evolving rapidly; breaking changes are expected.
+## Contributing
+Breaking changes are expected while the project evolves.

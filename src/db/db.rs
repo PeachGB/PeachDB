@@ -1,31 +1,46 @@
-use std::{collections::HashMap, io::SeekFrom, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use tokio::{
     fs::{File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     sync::{Mutex, RwLock},
 };
 
 use crate::{
     db::{
         DbMeta,
-        codec::{DBDecoder, DBDeleter, DBEncoder, IndexDecoder, IndexEncoder, IndexFromDBDecoder},
+        codec::{
+            DBDecoder, DBDeleter, DBEncoder, IndexDecoder, IndexEncoder, IndexFromDBDecoder,
+            bytes_from_field, encode,
+        },
+        file::FileHandler,
         wal::{WAL, WalEntry},
     },
     dtypes::{Field, Key, PDBResult},
     error::PeachDbError,
 };
 
+fn map_file_handler_error(err: Box<dyn std::error::Error + Send + Sync>) -> PeachDbError {
+    PeachDbError::Io(std::io::Error::other(err.to_string()))
+}
+
+#[derive(Clone, Hash)]
+pub struct IndexEntry {
+    pub offset: u64,
+    pub key_len: u16,
+    pub field_len: u32,
+}
 pub struct State {
     fields: HashMap<Key, Field>,
-    index: HashMap<Key, u64>,
+    //offset,keylen,fieldlen
+    index: HashMap<Key, IndexEntry>,
 }
 
 pub struct Database {
     state: Arc<RwLock<State>>,
     wal: Mutex<WAL>,
-    file: Mutex<File>,
-    index_file: Mutex<File>,
+    file: FileHandler,
+    index_file: FileHandler,
     meta: DbMeta,
 }
 async fn is_new_file(file: &File) -> PDBResult<bool> {
@@ -45,18 +60,28 @@ impl Database {
         let header = encoder.finish();
         file.write_all(header).await?;
 
+        let file = FileHandler::spawn(file)
+            .await
+            .map_err(|e| PeachDbError::Io(std::io::Error::other(e.to_string())))?;
+        let index_file = FileHandler::spawn(index_file)
+            .await
+            .map_err(|e| PeachDbError::Io(std::io::Error::other(e.to_string())))?;
+
         Ok(Database {
             state: Arc::new(RwLock::new(State {
                 fields: HashMap::new(),
                 index: HashMap::new(),
             })),
             wal: Mutex::new(wal),
-            file: Mutex::new(file),
-            index_file: Mutex::new(index_file),
+            file,
+            index_file,
             meta,
         })
     }
-    async fn build_index_from_file(name: &String, file: &mut File) -> PDBResult<HashMap<Key, u64>> {
+    async fn build_index_from_file(
+        name: &String,
+        file: &mut File,
+    ) -> PDBResult<HashMap<Key, IndexEntry>> {
         let mut idx: File = OpenOptions::new()
             .read(true)
             .write(true)
@@ -94,14 +119,21 @@ impl Database {
             index_decoder.decode_index_from_file()?;
             index_decoder.finish()?
         };
+        let file = FileHandler::spawn(file)
+            .await
+            .map_err(|e| PeachDbError::Io(std::io::Error::other(e.to_string())))?;
+        let index_file = FileHandler::spawn(index_file)
+            .await
+            .map_err(|e| PeachDbError::Io(std::io::Error::other(e.to_string())))?;
+
         Ok(Database {
             state: Arc::new(RwLock::new(State {
                 fields: fields,
                 index: index,
             })),
             wal: Mutex::new(wal),
-            file: Mutex::new(file),
-            index_file: Mutex::new(index_file),
+            file,
+            index_file,
             meta,
         })
     }
@@ -151,68 +183,93 @@ impl Database {
     }
 
     pub async fn set(&self, key: Key, field: Field) -> PDBResult<()> {
-        self.wal
-            .lock()
-            .await
-            .append_entry(WalEntry::Set(key.clone(), field.clone()))
-            .await?;
-        let mut db = self.state.write().await;
-        db.fields.insert(key, field);
+        {
+            self.wal
+                .lock()
+                .await
+                .append_entry(WalEntry::Set(key.clone(), field.clone()))
+                .await?;
+        }
+        {
+            let mut db = self.state.write().await;
+            db.fields.insert(key, field);
+        }
         Ok(())
     }
     pub async fn delete(&self, key: Key) -> PDBResult<()> {
-        self.wal
-            .lock()
-            .await
-            .append_entry(WalEntry::Delete(key.clone()))
-            .await?;
-        let mut db = self.state.write().await;
-        db.fields.remove(&key);
+        {
+            self.wal
+                .lock()
+                .await
+                .append_entry(WalEntry::Delete(key.clone()))
+                .await?;
+        }
+        {
+            let mut db = self.state.write().await;
+            db.fields.remove(&key);
+        }
         Ok(())
     }
     pub async fn flush(&self) -> PDBResult<()> {
         use WalEntry::*;
         let entries = self.wal.lock().await.pop_uncommited_entries().await?;
-        let mut encoder = DBEncoder::new();
         let mut deleter = DBDeleter::new();
-        let mut file = self.file.lock().await;
-        let mut state = self.state.write().await;
-        let initial_offset = file.seek(SeekFrom::End(0)).await?;
-        let mut offsets: Vec<(Key, u64)> = Vec::new();
+        let mut delete_plan: HashMap<Key, IndexEntry> = HashMap::new();
+        {
+            let state = self.state.read().await;
+            for entry in &entries {
+                if let Delete(key) = entry {
+                    if let Some(index_entry) = state.index.get(key) {
+                        delete_plan.insert(key.clone(), index_entry.clone());
+                    }
+                }
+            }
+        }
+        let mut indexes: Vec<(Key, IndexEntry)> = Vec::new();
         for entry in entries.into_iter() {
             match entry {
                 Set(key, field) => {
-                    let record_start = initial_offset + encoder.finish().len() as u64;
-                    encoder.encode_db_key_field_pair(&key, &field);
-                    offsets.push((key, record_start));
+                    let record = encode(&key, &field);
+                    let record_start = self
+                        .file
+                        .append(record)
+                        .await
+                        .map_err(map_file_handler_error)?;
+                    indexes.push((
+                        key.clone(),
+                        IndexEntry {
+                            offset: record_start,
+                            key_len: key.len() as u16,
+                            field_len: bytes_from_field(&field).len() as u32,
+                        },
+                    ));
                 }
                 Delete(key) => {
-                    let Some(pos) = state.index.get(&key) else {
+                    let Some(entry) = delete_plan.get(&key) else {
                         continue;
                     };
-                    file.seek(SeekFrom::Start(pos.clone() + 4)).await?;
-                    let key_len = file.read_u16().await?;
-                    let field_len = file.read_u32().await?;
                     let deleted = deleter
-                        .set_key_len(key_len)
-                        .set_field_len(field_len)
+                        .set_key_len(entry.key_len)
+                        .set_field_len(entry.field_len)
                         .get_deleted_field()
                         .finish();
-                    file.seek(SeekFrom::Start(pos.clone())).await?;
-                    file.write_all(deleted).await?;
+                    self.file
+                        .write_at(entry.offset, deleted.to_vec())
+                        .await
+                        .map_err(map_file_handler_error)?;
                     deleter.reset();
                 }
                 Commit => unreachable!(),
             }
         }
-        file.seek(SeekFrom::End(0)).await?;
-        if !encoder.finish().is_empty() {
-            file.write_all(encoder.finish()).await?;
-        }
-
-        file.flush().await?;
-        for (k, i) in offsets.into_iter() {
+        self.file.sync_all().await.map_err(map_file_handler_error)?;
+        let mut state = self.state.write().await;
+        for (k, i) in indexes.into_iter() {
             state.index.insert(k, i);
+        }
+        for key in delete_plan.keys() {
+            state.index.remove(key);
+            state.fields.remove(key);
         }
         drop(state);
         self.rebuild_index().await?;
@@ -222,12 +279,23 @@ impl Database {
     async fn rebuild_index(&self) -> PDBResult<()> {
         let mut encoder = IndexEncoder::new();
 
-        let index = &self.state.read().await.index;
-        let mut index_file = self.index_file.lock().await;
-        encoder.encode_index_file(index);
-        index_file.seek(SeekFrom::Start(0)).await?;
-        index_file.write_all(encoder.finish()).await?;
-        index_file.flush().await?;
+        let index = {
+            let state = self.state.read().await;
+            state.index.clone()
+        };
+        encoder.encode_index_file(&index);
+        self.index_file
+            .set_len(0)
+            .await
+            .map_err(map_file_handler_error)?;
+        self.index_file
+            .write_at(0, encoder.finish().to_vec())
+            .await
+            .map_err(map_file_handler_error)?;
+        self.index_file
+            .sync_all()
+            .await
+            .map_err(map_file_handler_error)?;
 
         Ok(())
     }
