@@ -13,7 +13,6 @@ PeachDB is a work-in-progress key/value database prototype written in Rust with 
 - Codec lives in `src/db/codec.rs`.
 - `Field` payloads now start with the `Dtype` byte.
 - Unified error type lives in `src/error.rs`.
-- Thin public wrapper lives in `src/interface.rs`.
 - Unit tests exist under `src/tests/`.
 
 ## What works
@@ -31,7 +30,6 @@ PeachDB is a work-in-progress key/value database prototype written in Rust with 
 
 ## Using it
 - `cargo test`
-- `src/interface.rs::Database` is the main entry point
 
 ## Contributing
 Breaking changes are expected while the project evolves.
