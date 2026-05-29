@@ -1,12 +1,15 @@
 use crate::{
     db::{DbMeta, IndexEntry, wal::WalEntry},
-    dtypes::{Dtype, FIELD_LEN_BYTE_SIZE, Field, KEY_LEN_BYTE_SIZE, Key, PDBResult, Primitive},
+    dtypes::{
+        Dtype, Field, FIELD_LEN_BYTE_SIZE, KEY_LEN_BYTE_SIZE, Key, PDBResult, Primitive,
+        bytes_from_field, bytes_from_primitive, field_from_bytes,
+    },
     error::PeachDbError,
 };
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::{
     collections::HashMap,
-    io::{Cursor, Read, Write},
+    io::{Cursor, Read},
     sync::Arc,
 };
 
@@ -17,110 +20,6 @@ const CRC_LENGTH_BYTE_SIZE: usize = 4;
 const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 const RECORD_MAGIC_NUMBER: [u8; 4] = [b'R', b'E', b'C', 0x01];
 const CRC_OFFSET: usize = RECORD_MAGIC_NUMBER_BYTE_SIZE + KEY_LEN_BYTE_SIZE + FIELD_LEN_BYTE_SIZE;
-
-pub fn bytes_from_primitive(p: &Primitive) -> Vec<u8> {
-    match p {
-        Primitive::Integer(n) => n.to_le_bytes().to_vec(),
-        Primitive::Float(f) => f.to_le_bytes().to_vec(),
-        Primitive::String(s) => {
-            let mut b = Vec::with_capacity(FIELD_LEN_BYTE_SIZE + s.len());
-            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
-            b.extend_from_slice(s.as_bytes());
-            b
-        }
-        Primitive::Boolean(bool) => vec![*bool as u8],
-    }
-}
-
-pub fn primitive_from_bytes(dt: &Dtype, buf: &[u8]) -> PDBResult<(Primitive, usize)> {
-    match dt {
-        Dtype::Integer => {
-            if buf.len() < 8 {
-                return Err(PeachDbError::BufferTooShort);
-            }
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(&buf[0..8]);
-            Ok((Primitive::Integer(i64::from_le_bytes(arr)), 8))
-        }
-        Dtype::Float => {
-            if buf.len() < 8 {
-                return Err(PeachDbError::BufferTooShort);
-            }
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(&buf[0..8]);
-            Ok((Primitive::Float(f64::from_le_bytes(arr)), 8))
-        }
-        Dtype::Boolean => Ok((Primitive::Boolean(buf[0] != 0), 1)),
-        Dtype::String => {
-            if buf.len() < 4 {
-                return Err(PeachDbError::BufferTooShort);
-            }
-            let len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
-            let s = String::from_utf8(buf[4..4 + len].to_vec()).map_err(|e| {
-                PeachDbError::CorruptedRecord {
-                    reason: format!("invalid utf8: {}", e),
-                }
-            })?;
-            Ok((Primitive::String(s), FIELD_LEN_BYTE_SIZE + len))
-        }
-        Dtype::Array(_) => Err(PeachDbError::UnknownDtype { byte: dt.as_byte() }),
-    }
-}
-
-pub fn bytes_from_field(f: &Field) -> Vec<u8> {
-    match f {
-        Field::Primitive(p) => {
-            let primitive = bytes_from_primitive(p);
-            let mut out = Vec::with_capacity(1 + primitive.len());
-            out.push(f.dtype().as_byte());
-            out.extend_from_slice(&primitive);
-            out
-        }
-        Field::Array(dt, array) => {
-            let mut array_as_bytes = Vec::new();
-            let count = array.len() as u32;
-            // first byte: Array dtype marker with inner dtype encoded in low nibble
-            array_as_bytes.push(Dtype::Array(dt.as_byte()).as_byte());
-            array_as_bytes.extend_from_slice(&count.to_le_bytes());
-            for item in array.iter() {
-                array_as_bytes.extend_from_slice(&bytes_from_primitive(item));
-            }
-            array_as_bytes
-        }
-    }
-}
-
-pub fn field_from_bytes(buf: &[u8]) -> PDBResult<(Field, usize)> {
-    if buf.is_empty() {
-        return Err(PeachDbError::BufferTooShort);
-    }
-
-    let dtype = Dtype::try_from(buf[0])?;
-    let payload = &buf[1..];
-
-    match dtype {
-        Dtype::Integer | Dtype::Float | Dtype::String | Dtype::Boolean => {
-            let (p, c) = primitive_from_bytes(&dtype, payload)?;
-            Ok((Field::Primitive(p), 1 + c))
-        }
-        Dtype::Array(inner) => {
-            if payload.len() < 4 {
-                return Err(PeachDbError::BufferTooShort);
-            }
-            let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
-            let mut offset = 4usize;
-            let mut v: Vec<Primitive> = Vec::with_capacity(count);
-            let inner_dt = Dtype::try_from(inner)?;
-            for _ in 0..count {
-                let (p, consumed) = primitive_from_bytes(&inner_dt, &payload[offset..])?;
-                offset += consumed;
-                v.push(p);
-            }
-            let arc: Arc<[Primitive]> = v.into_boxed_slice().into();
-            Ok((Field::Array(inner_dt, arc), 1 + offset))
-        }
-    }
-}
 
 pub struct DBEncoder {
     buffer: Vec<u8>,
@@ -302,6 +201,7 @@ pub struct DBDecoder<'a> {
     cursor: Cursor<&'a [u8]>,
     db: HashMap<Key, Field>,
     meta: Option<DbMeta>,
+    deleted: bool,
     last_key_len: u16,
     last_field_len: u32,
     last_crc: u32,
@@ -319,17 +219,24 @@ impl<'a> DBDecoder<'a> {
             last_crc: 0u32,
             last_key: Vec::new(),
             last_field: Vec::new(),
+            deleted: false,
         }
     }
 
     fn read_magic_number(&mut self) -> PDBResult<&mut Self> {
         let mut rec_magic_number = [0u8; 4];
         self.cursor.read_exact(&mut rec_magic_number)?;
-
-        if rec_magic_number != RECORD_MAGIC_NUMBER {
-            return Err(PeachDbError::InvalidMagicBytes);
+        match rec_magic_number {
+            [0, 0, 0, 0] => {
+                self.deleted = true;
+                Ok(self)
+            }
+            RECORD_MAGIC_NUMBER => {
+                self.deleted = false;
+                Ok(self)
+            }
+            _ => Err(PeachDbError::InvalidMagicBytes),
         }
-        Ok(self)
     }
     fn read_key_len(&mut self) -> PDBResult<&mut Self> {
         let mut key_len_bytes = [0u8; 2];
@@ -393,7 +300,9 @@ impl<'a> DBDecoder<'a> {
             .check_crc()?;
 
         let (field, _) = field_from_bytes(&self.last_field)?;
-        self.db.insert(Key::from(self.last_key.clone()), field);
+        if !self.deleted {
+            self.db.insert(Key::from(self.last_key.clone()), field);
+        }
         Ok(self)
     }
 

@@ -9,14 +9,11 @@ use tokio::{
 use crate::{
     db::{
         DbMeta,
-        codec::{
-            DBDecoder, DBDeleter, DBEncoder, IndexDecoder, IndexEncoder, IndexFromDBDecoder,
-            bytes_from_field, encode,
-        },
+        codec::{DBDecoder, DBDeleter, DBEncoder, IndexDecoder, IndexEncoder, IndexFromDBDecoder, encode},
         file::FileHandler,
         wal::{WAL, WalEntry},
     },
-    dtypes::{Field, Key, PDBResult},
+    dtypes::{Field, Key, PDBResult, bytes_from_field},
     error::PeachDbError,
 };
 
@@ -47,7 +44,7 @@ async fn is_new_file(file: &File) -> PDBResult<bool> {
     Ok(file.metadata().await?.len() == 0)
 }
 impl Database {
-    async fn new(name: String, mut file: File, index_file: File, wal: WAL) -> PDBResult<Self> {
+    async fn new(name: String, mut file: File, mut index_file: File, wal: WAL) -> PDBResult<Self> {
         let meta = DbMeta {
             name: name,
             version: 1,
@@ -273,9 +270,15 @@ impl Database {
         }
         drop(state);
         self.rebuild_index().await?;
+        self.wal.lock().await.checkpoint().await?;
 
         Ok(())
     }
+    pub async fn keys(&self) -> PDBResult<Vec<Key>> {
+        let state = self.state.read().await;
+        Ok(state.fields.keys().cloned().collect())
+    }
+
     async fn rebuild_index(&self) -> PDBResult<()> {
         let mut encoder = IndexEncoder::new();
 

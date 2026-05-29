@@ -1,5 +1,5 @@
-use crate::db::{bytes_from_primitive, primitive_from_bytes, bytes_from_field, field_from_bytes, encode, decode};
-use crate::dtypes::{Dtype, Primitive, Field, Key};
+use crate::db::{encode, decode};
+use crate::dtypes::{Dtype, Primitive, Field, Key, bytes_from_primitive, primitive_from_bytes, bytes_from_field, field_from_bytes};
 use std::sync::Arc;
 
 #[test]
