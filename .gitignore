@@ -1,1 +1,6 @@
 /target
+*.db
+*.dbidx
+*.wal
+peachdb_bench_tmp*
+peachdb.*

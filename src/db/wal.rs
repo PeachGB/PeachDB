@@ -1,4 +1,4 @@
-use std::{error::Error, path::Path};
+use std::path::Path;
 
 use crate::{
     db::{
@@ -6,7 +6,6 @@ use crate::{
         file::{FileHandler, map_file_handler_error},
     },
     dtypes::{Field, Key, PDBResult},
-    error::PeachDbError,
 };
 use tokio::fs::OpenOptions;
 
@@ -27,11 +26,11 @@ impl WalEntry {
     }
 }
 
-pub struct WAL {
+pub struct Wal {
     file: FileHandler,
     entries: Vec<WalEntry>,
 }
-impl WAL {
+impl Wal {
     pub async fn open(path: impl AsRef<Path>) -> PDBResult<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -44,7 +43,7 @@ impl WAL {
             .await
             .map_err(map_file_handler_error)?;
         let entries = Vec::new();
-        let mut wal = WAL { file, entries };
+        let mut wal = Wal { file, entries };
         wal.replay().await?;
         Ok(wal)
     }

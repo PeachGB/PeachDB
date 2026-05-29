@@ -86,6 +86,9 @@ impl Key {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
     ///returns the value of the elements in the vector plus the lenght of the bytes that contains the key size information. as the vector a Vec<u8> this returns the number of bytes
     pub fn size(&self) -> usize {
         KEY_LEN_BYTE_SIZE + self.0.len()
@@ -118,6 +121,9 @@ impl Field {
             Field::Raw(bytes) => bytes.len(),
             Field::Array(_dtype, a) => a.len(),
         }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
     pub fn dtype(&self) -> Dtype {
         match self {

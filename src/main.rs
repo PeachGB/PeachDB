@@ -1,12 +1,5 @@
-mod db;
-mod dtypes;
-mod error;
-mod server;
-#[cfg(test)]
-mod tests;
-
-use db::Database;
-use server::Server;
+use peachdb::db::Database;
+use peachdb::server::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -9,11 +9,6 @@ use tokio::{
 use crate::error::PeachDbError;
 
 enum FileCmd {
-    ReadAt {
-        pos: u64,
-        len: usize,
-        resp: oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
-    },
     ReadAll {
         resp: oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
     },
@@ -33,7 +28,6 @@ enum FileCmd {
     SyncAll {
         resp: oneshot::Sender<Result<(), Box<dyn Error + Send + Sync>>>,
     },
-    Close,
 }
 
 pub struct FileHandler {
@@ -45,16 +39,6 @@ impl FileHandler {
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    FileCmd::ReadAt { pos, len, resp } => {
-                        let res: Result<Vec<u8>, Box<dyn Error + Send + Sync>> = async {
-                            file.seek(SeekFrom::Start(pos)).await?;
-                            let mut buf: Vec<u8> = vec![0u8; len];
-                            file.read_exact(&mut buf).await?;
-                            Ok(buf)
-                        }
-                        .await;
-                        let _ = resp.send(res);
-                    }
                     FileCmd::ReadAll { resp } => {
                         let res: Result<Vec<u8>, Box<dyn Error + Send + Sync>> = async {
                             file.seek(SeekFrom::Start(0)).await?;
@@ -100,28 +84,12 @@ impl FileHandler {
                         .await;
                         let _ = resp.send(res);
                     }
-                    FileCmd::Close => break,
                 }
             }
         });
         Ok(FileHandler { tx })
     }
 
-    pub async fn read_at(
-        &self,
-        pos: u64,
-        len: usize,
-    ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(FileCmd::ReadAt {
-                pos,
-                len,
-                resp: resp_tx,
-            })
-            .await?;
-        resp_rx.await?
-    }
     pub async fn read_all(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx.send(FileCmd::ReadAll { resp: resp_tx }).await?;
@@ -161,10 +129,6 @@ impl FileHandler {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx.send(FileCmd::SyncAll { resp: resp_tx }).await?;
         resp_rx.await?
-    }
-    pub async fn close(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.tx.send(FileCmd::Close).await?;
-        Ok(())
     }
 }
 

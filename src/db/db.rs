@@ -11,7 +11,7 @@ use crate::{
         DbMeta,
         codec::{DBDecoder, DBDeleter, DBEncoder, IndexDecoder, IndexEncoder, IndexFromDBDecoder, encode},
         file::FileHandler,
-        wal::{WAL, WalEntry},
+        wal::{Wal, WalEntry},
     },
     dtypes::{Field, Key, PDBResult, bytes_from_field},
     error::PeachDbError,
@@ -21,37 +21,36 @@ fn map_file_handler_error(err: Box<dyn std::error::Error + Send + Sync>) -> Peac
     PeachDbError::Io(std::io::Error::other(err.to_string()))
 }
 
+// Header layout: Header(8)+magic(8)+Version(8)+ver(1)+ver_dec(1)+RecCount(8) = 34
+const RECORD_COUNT_OFFSET: u64 = 34;
+
 #[derive(Clone, Hash)]
 pub struct IndexEntry {
     pub offset: u64,
     pub key_len: u16,
     pub field_len: u32,
 }
+
 pub struct State {
     fields: HashMap<Key, Field>,
-    //offset,keylen,fieldlen
     index: HashMap<Key, IndexEntry>,
 }
 
 pub struct Database {
     state: Arc<RwLock<State>>,
-    wal: Mutex<WAL>,
+    wal: Mutex<Wal>,
     file: FileHandler,
     index_file: FileHandler,
-    meta: DbMeta,
 }
+
 async fn is_new_file(file: &File) -> PDBResult<bool> {
     Ok(file.metadata().await?.len() == 0)
 }
+
 impl Database {
-    async fn new(name: String, mut file: File, mut index_file: File, wal: WAL) -> PDBResult<Self> {
-        let meta = DbMeta {
-            name: name,
-            version: 1,
-            record_count: 0,
-        };
+    async fn new(name: String, mut file: File, index_file: File, wal: Wal) -> PDBResult<Self> {
+        let meta = DbMeta { name, version: 1, record_count: 0 };
         file.set_len(0).await?;
-        index_file.set_len(0).await?;
         let mut encoder = DBEncoder::new();
         encoder.encode_db_header(&meta);
         let header = encoder.finish();
@@ -72,38 +71,17 @@ impl Database {
             wal: Mutex::new(wal),
             file,
             index_file,
-            meta,
         })
     }
-    async fn build_index_from_file(
-        name: &String,
-        file: &mut File,
-    ) -> PDBResult<HashMap<Key, IndexEntry>> {
-        let mut idx: File = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(format!("{}.dbidx", name))
-            .await?;
-        let mut file_buf = Vec::new();
-        file.read_to_end(&mut file_buf).await?;
-        let mut decoder = IndexFromDBDecoder::new(&file_buf);
-        decoder.decode_index_from_file()?;
-        let index = decoder.finish()?;
-        let mut encoder = IndexEncoder::new();
-        encoder.encode_index_file(&index);
-        idx.write_all(&encoder.finish()).await?;
-        Ok(index)
-    }
-    async fn init(mut file: File, mut index_file: File, wal: WAL) -> PDBResult<Self> {
-        let mut file_buf = Vec::with_capacity(file.metadata().await?.len() as usize);
 
+    async fn init(mut file: File, mut index_file: File, wal: Wal) -> PDBResult<Self> {
+        let mut file_buf = Vec::with_capacity(file.metadata().await?.len() as usize);
         file.read_to_end(&mut file_buf).await?;
         let mut index_file_buf = Vec::with_capacity(index_file.metadata().await?.len() as usize);
         index_file.read_to_end(&mut index_file_buf).await?;
-        let mut decoder = DBDecoder::new(&file_buf);
 
-        let (fields, meta) = {
+        let mut decoder = DBDecoder::new(&file_buf);
+        let (fields, _) = {
             decoder.decode_db_file()?;
             decoder.finish()?
         };
@@ -124,20 +102,16 @@ impl Database {
             .map_err(map_file_handler_error)?;
 
         Ok(Database {
-            state: Arc::new(RwLock::new(State {
-                fields: fields,
-                index: index,
-            })),
+            state: Arc::new(RwLock::new(State { fields, index })),
             wal: Mutex::new(wal),
             file,
             index_file,
-            meta,
         })
     }
 }
+
 impl Database {
     pub async fn open(name: String) -> PDBResult<Self> {
-        //db name is 64Bytes
         if name.len() > 64 {
             return Err(PeachDbError::DBNameToLong);
         }
@@ -155,58 +129,43 @@ impl Database {
             .await?;
         let db_is_new = is_new_file(&file).await?;
         let index_is_new = is_new_file(&index_file).await?;
-        let wal = WAL::open(format!("{}.wal", name)).await?;
+        let wal = Wal::open(format!("{}.wal", name)).await?;
 
         match (db_is_new, index_is_new) {
-            (true, true) => Database::new(name, file, index_file, wal).await,
-            (false, false) => Database::init(file, index_file, wal).await,
-            (true, false) => Database::new(name, file, index_file, wal).await,
-            (false, true) => Database::init(file, index_file, wal).await,
+            (true, _) => Database::new(name, file, index_file, wal).await,
+            (false, _) => Database::init(file, index_file, wal).await,
         }
     }
 
     pub async fn get(&self, key: &Key) -> PDBResult<Field> {
         let state = self.state.read().await;
-        match state.fields.contains_key(key) {
-            true => {
-                let field = state.fields.get(key).unwrap_or_else(|| unreachable!());
-                Ok(field.clone())
-            }
-            false => {
-                //todo! make fn to take key,field from wal
-                return Err(PeachDbError::KeyNotFound);
-            }
+        if let Some(field) = state.fields.get(key) {
+            Ok(field.clone())
+        } else {
+            Err(PeachDbError::KeyNotFound)
         }
     }
 
     pub async fn set(&self, key: Key, field: Field) -> PDBResult<()> {
-        {
-            self.wal
-                .lock()
-                .await
-                .append_entry(WalEntry::Set(key.clone(), field.clone()))
-                .await?;
-        }
-        {
-            let mut db = self.state.write().await;
-            db.fields.insert(key, field);
-        }
+        self.wal
+            .lock()
+            .await
+            .append_entry(WalEntry::Set(key.clone(), field.clone()))
+            .await?;
+        self.state.write().await.fields.insert(key, field);
         Ok(())
     }
+
     pub async fn delete(&self, key: Key) -> PDBResult<()> {
-        {
-            self.wal
-                .lock()
-                .await
-                .append_entry(WalEntry::Delete(key.clone()))
-                .await?;
-        }
-        {
-            let mut db = self.state.write().await;
-            db.fields.remove(&key);
-        }
+        self.wal
+            .lock()
+            .await
+            .append_entry(WalEntry::Delete(key.clone()))
+            .await?;
+        self.state.write().await.fields.remove(&key);
         Ok(())
     }
+
     pub async fn flush(&self) -> PDBResult<()> {
         use WalEntry::*;
         let entries = self.wal.lock().await.pop_uncommited_entries().await?;
@@ -215,10 +174,10 @@ impl Database {
         {
             let state = self.state.read().await;
             for entry in &entries {
-                if let Delete(key) = entry {
-                    if let Some(index_entry) = state.index.get(key) {
-                        delete_plan.insert(key.clone(), index_entry.clone());
-                    }
+                if let Delete(key) = entry
+                    && let Some(index_entry) = state.index.get(key)
+                {
+                    delete_plan.insert(key.clone(), index_entry.clone());
                 }
             }
         }
@@ -269,37 +228,34 @@ impl Database {
             state.fields.remove(key);
         }
         drop(state);
+        self.update_record_count().await?;
         self.rebuild_index().await?;
         self.wal.lock().await.checkpoint().await?;
-
         Ok(())
     }
+
+    async fn update_record_count(&self) -> PDBResult<()> {
+        let count = self.state.read().await.fields.len() as u64;
+        self.file
+            .write_at(RECORD_COUNT_OFFSET, count.to_le_bytes().to_vec())
+            .await
+            .map_err(map_file_handler_error)
+    }
+
     pub async fn keys(&self) -> PDBResult<Vec<Key>> {
-        let state = self.state.read().await;
-        Ok(state.fields.keys().cloned().collect())
+        Ok(self.state.read().await.fields.keys().cloned().collect())
     }
 
     async fn rebuild_index(&self) -> PDBResult<()> {
         let mut encoder = IndexEncoder::new();
-
-        let index = {
-            let state = self.state.read().await;
-            state.index.clone()
-        };
+        let index = self.state.read().await.index.clone();
         encoder.encode_index_file(&index);
-        self.index_file
-            .set_len(0)
-            .await
-            .map_err(map_file_handler_error)?;
+        self.index_file.set_len(0).await.map_err(map_file_handler_error)?;
         self.index_file
             .write_at(0, encoder.finish().to_vec())
             .await
             .map_err(map_file_handler_error)?;
-        self.index_file
-            .sync_all()
-            .await
-            .map_err(map_file_handler_error)?;
-
+        self.index_file.sync_all().await.map_err(map_file_handler_error)?;
         Ok(())
     }
 }

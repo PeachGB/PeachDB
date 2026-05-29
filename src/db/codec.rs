@@ -1,8 +1,8 @@
 use crate::{
     db::{DbMeta, IndexEntry, wal::WalEntry},
     dtypes::{
-        Dtype, Field, FIELD_LEN_BYTE_SIZE, KEY_LEN_BYTE_SIZE, Key, PDBResult, Primitive,
-        bytes_from_field, bytes_from_primitive, field_from_bytes,
+        Field, FIELD_LEN_BYTE_SIZE, KEY_LEN_BYTE_SIZE, Key, PDBResult,
+        bytes_from_field, field_from_bytes,
     },
     error::PeachDbError,
 };
@@ -10,13 +10,11 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use std::{
     collections::HashMap,
     io::{Cursor, Read},
-    sync::Arc,
 };
 
 use crc::{CRC_32_ISO_HDLC, Crc};
 
 const RECORD_MAGIC_NUMBER_BYTE_SIZE: usize = 4;
-const CRC_LENGTH_BYTE_SIZE: usize = 4;
 const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 const RECORD_MAGIC_NUMBER: [u8; 4] = [b'R', b'E', b'C', 0x01];
 const CRC_OFFSET: usize = RECORD_MAGIC_NUMBER_BYTE_SIZE + KEY_LEN_BYTE_SIZE + FIELD_LEN_BYTE_SIZE;
@@ -59,12 +57,7 @@ impl DBEncoder {
     }
 
     fn encode_key(&mut self, key: &Key) -> &mut Self {
-        let key = key.as_bytes();
-        self.write(key)
-    }
-    fn encode_field(&mut self, field: &Field) -> &mut Self {
-        let payload = bytes_from_field(field);
-        self.write(&payload)
+        self.write(key.as_bytes())
     }
     fn encode_crc_placeholder(&mut self) -> &mut Self {
         self.write(&[0u8; 4])
@@ -151,12 +144,18 @@ impl DBEncoder {
         }
         self
     }
-    pub fn reset(&mut self) -> () {
+    pub fn reset(&mut self) {
         self.buffer.clear();
         self.field_start_position = 0;
     }
     pub fn finish(&self) -> &[u8] {
         &self.buffer
+    }
+}
+
+impl Default for DBEncoder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -315,10 +314,10 @@ impl<'a> DBDecoder<'a> {
     fn read_metadata_key(&mut self) -> PDBResult<&mut Self> {
         let mut key_buf = [0u8; 8];
         self.cursor.read_exact(&mut key_buf)?;
-        if !Self::is_metadata_key(&key_buf) {
-            return Err(PeachDbError::InvalidMagicBytes);
-        } else {
+        if Self::is_metadata_key(&key_buf) {
             Ok(self)
+        } else {
+            Err(PeachDbError::InvalidMagicBytes)
         }
     }
     fn decode_db_header(&mut self) -> PDBResult<&mut Self> {
@@ -406,10 +405,6 @@ impl WalEncoder {
     fn encode_delete_entry(&mut self, key: &Key) -> &mut Self {
         self.encode_delete_bytes().encode_key(key)
     }
-    fn encode_commit_entry(&mut self) -> &mut Self {
-        self.encode_commit_bytes()
-    }
-
     pub fn encode_wal_entry(&mut self, entry: &WalEntry) -> &mut Self {
         match &entry {
             WalEntry::Set(key, field) => self.encode_set_entry(key, field),
@@ -424,6 +419,13 @@ impl WalEncoder {
         self.buffer.clear()
     }
 }
+
+impl Default for WalEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct WalDecoder<'a> {
     cursor: Cursor<&'a [u8]>,
     wal: Vec<WalEntry>,
@@ -575,9 +577,10 @@ impl<'a> IndexFromDBDecoder<'a> {
         self.cursor.read_exact(&mut rec_magic_number)?;
 
         if rec_magic_number != RECORD_MAGIC_NUMBER {
-            return Err(PeachDbError::InvalidMagicBytes);
+            Err(PeachDbError::InvalidMagicBytes)
+        } else {
+            Ok(self)
         }
-        Ok(self)
     }
     fn read_key_len(&mut self) -> PDBResult<&mut Self> {
         let mut key_len_bytes = [0u8; 2];
@@ -622,12 +625,6 @@ impl<'a> IndexFromDBDecoder<'a> {
         Ok(self)
     }
 
-    fn is_metadata_key(key: &[u8; 8]) -> bool {
-        key == &DB_HEADER_KEY
-            || key == &DB_VERSION_KEY
-            || key == &DB_RECORD_COUNT_KEY
-            || key == &DB_NAME_KEY
-    }
     fn skip_metadata_key(&mut self) -> PDBResult<&mut Self> {
         self.cursor.set_position(self.cursor.position() + 8u64);
         Ok(self)
@@ -707,6 +704,13 @@ impl IndexEncoder {
         &self.buffer
     }
 }
+
+impl Default for IndexEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct DBDeleter {
     buffer: Vec<u8>,
     key_len: u16,
@@ -768,5 +772,11 @@ impl DBDeleter {
     fn encode_field(&mut self) -> &mut Self {
         let field = vec![0; self.field_len as usize];
         self.write(&field)
+    }
+}
+
+impl Default for DBDeleter {
+    fn default() -> Self {
+        Self::new()
     }
 }

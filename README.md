@@ -1,6 +1,6 @@
 # PeachDB
 
-PeachDB is an async, file-backed key/value database written in Rust with Tokio. It exposes a binary TCP protocol and stores data across three on-disk files per database. The project is a work in progress — the storage engine and protocol are functional, and the server can accept client connections.
+PeachDB is an async, file-backed key/value database written in Rust with Tokio. It exposes a binary TCP protocol and stores data across three on-disk files per database. The storage engine, protocol, and TCP server are fully functional.
 
 ---
 
@@ -13,6 +13,7 @@ PeachDB is an async, file-backed key/value database written in Rust with Tokio. 
 - [TCP protocol](#tcp-protocol)
 - [Rust API](#rust-api)
 - [Build and run](#build-and-run)
+- [Examples](#examples)
 - [Test suite](#test-suite)
 - [Known limitations](#known-limitations)
 
@@ -22,6 +23,7 @@ PeachDB is an async, file-backed key/value database written in Rust with Tokio. 
 
 ```
 src/
+├── lib.rs                — public crate root (re-exports db, dtypes, error, server)
 ├── main.rs               — entry point: opens DB, starts TCP server
 ├── dtypes.rs             — Key, Field, Dtype, Primitive, serialisation helpers
 ├── error.rs              — unified PeachDbError (thiserror)
@@ -57,7 +59,7 @@ src/
 
 ```
 db.set(key, field)
-  └─ WAL::append_entry(Set)  →  append to .wal on disk
+  └─ WAL::append_entry(Set)  →  append to .wal on disk  →  fsync
   └─ state.fields.insert(key, field)  →  in-memory, immediately visible to reads
 ```
 
@@ -66,9 +68,10 @@ db.set(key, field)
 ```
 db.flush()
   └─ WAL::pop_uncommitted_entries()
-  └─ for each Set  →  encode record  →  FileHandler::append to .db
-  └─ for each Delete  →  write tombstone (zero-filled) over existing record in .db
+  └─ for each Set    →  encode record  →  FileHandler::append to .db
+  └─ for each Delete →  write tombstone (zero-filled) over existing record in .db
   └─ file.sync_all()
+  └─ update record_count in .db header
   └─ rebuild .dbidx from state.index
   └─ WAL::checkpoint()  →  truncate .wal to 0 bytes
 ```
@@ -108,7 +111,7 @@ All multi-byte integers are **little-endian** unless stated otherwise. The TCP p
 | Version major | 1 B | `0x01` |
 | Version minor | 1 B | `0x00` |
 | Key `RecCount` | 8 B | ASCII literal |
-| Record count | 8 B | u64 LE |
+| Record count | 8 B | u64 LE — updated on every flush |
 | Key `DB Name-` | 8 B | ASCII literal |
 | DB name | 64 B | UTF-8, null-padded |
 
@@ -142,7 +145,7 @@ No header. A flat sequence of entries, one per live key:
 
 ### `.wal` — write-ahead log
 
-Append-only. Entries are written on every `set` / `delete` before the in-memory state is updated. The file is truncated to zero after a successful flush (checkpoint).
+Append-only. Entries are written on every `set` / `delete` before the in-memory state is updated. The file is truncated to zero after a successful flush (checkpoint). Each write is followed by an `fsync`.
 
 | Entry | Encoding |
 |---|---|
@@ -220,7 +223,7 @@ Every message (request or response) is length-prefixed:
 - The server reads requests in a loop on each connection.
 - On `UnexpectedEof` or `ConnectionReset` the connection is closed cleanly.
 - An invalid request (bad version byte, unknown command) returns `InvalidRequest` and the connection remains open — the next request is read normally.
-- `Del` is idempotent: deleting a key that does not exist returns `Ok`.
+- `Del` on a non-existent key returns `NotFound`.
 
 ---
 
@@ -271,6 +274,38 @@ The server creates `peachdb.db`, `peachdb.dbidx`, and `peachdb.wal` in the worki
 
 ---
 
+## Examples
+
+### CLI client
+
+A synchronous command-line client that connects to a running server:
+
+```bash
+cargo run --example peachdb-cli -- ping
+cargo run --example peachdb-cli -- set name Alice
+cargo run --example peachdb-cli -- get name
+cargo run --example peachdb-cli -- keys
+cargo run --example peachdb-cli -- del name
+
+# custom server address
+cargo run --example peachdb-cli -- --addr 10.0.0.1:7878 get name
+```
+
+Values passed to `set` are auto-typed: `true`/`false` → Boolean, integers → Integer, floats → Float, anything else → String.
+
+### Benchmark
+
+Measures set, get, delete, and flush throughput directly against the storage engine (no TCP overhead):
+
+```bash
+cargo run --release --example bench         # default N=1000
+cargo run --release --example bench -- 100  # custom N
+```
+
+SET and DELETE are bounded by WAL fsync-per-write. On WSL or network filesystems, fsync is slow — use a smaller N or run on a native Linux filesystem for representative numbers.
+
+---
+
 ## Test suite
 
 37 tests across four files:
@@ -289,9 +324,7 @@ Each database test creates uniquely named files and cleans them up via a `DbClea
 ## Known limitations
 
 - **WAL is not crash-safe after checkpoint.** If the process dies between `sync_all()` on `.db` and `WAL::checkpoint()`, the WAL still holds the committed entries and replay is safe. However, there is no crash recovery path for a partially written record within a flush.
-- **`delete` does not check key existence.** It always returns `Ok(())` regardless of whether the key was present.
-- **`flush` does not update `record_count`** in the `.db` header after writes.
-- **No authentication or access control** on the TCP server.
 - **No compaction.** Tombstones accumulate in `.db`; the file never shrinks.
 - **Server binds on a fixed address** (`127.0.0.1:7878` hardcoded in `main.rs`); no config file or CLI flags yet.
+- **No authentication or access control** on the TCP server.
 - Several unused `pub` items and imports produce compiler warnings (`cargo clippy` lists them).

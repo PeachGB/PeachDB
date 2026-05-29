@@ -1,5 +1,5 @@
 use crate::db::Database;
-use crate::dtypes::{Key, PDBResult};
+use crate::dtypes::PDBResult;
 use crate::error::PeachDbError;
 use crate::server::protocol::{ProtocolDecoder, ProtocolEncoder, Request, Response};
 use std::sync::Arc;

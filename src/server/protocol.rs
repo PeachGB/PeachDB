@@ -217,6 +217,12 @@ impl ProtocolEncoder {
     }
 }
 
+impl Default for ProtocolEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct ProtocolDecoder<'a> {
     cursor: std::io::Cursor<&'a [u8]>,
 }
