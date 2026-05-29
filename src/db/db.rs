@@ -81,7 +81,7 @@ impl Database {
         index_file.read_to_end(&mut index_file_buf).await?;
 
         let mut decoder = DBDecoder::new(&file_buf);
-        let (fields, _) = {
+        let (mut fields, _) = {
             decoder.decode_db_file()?;
             decoder.finish()?
         };
@@ -94,6 +94,14 @@ impl Database {
             index_decoder.decode_index_from_file()?;
             index_decoder.finish()?
         };
+
+        for entry in wal.pop_uncommited_entries().await? {
+            match entry {
+                WalEntry::Set(key, field) => { fields.insert(key, field); }
+                WalEntry::Delete(key) => { fields.remove(&key); }
+            }
+        }
+
         let file = FileHandler::spawn(file)
             .await
             .map_err(map_file_handler_error)?;
@@ -169,20 +177,33 @@ impl Database {
     pub async fn flush(&self) -> PDBResult<()> {
         use WalEntry::*;
         let entries = self.wal.lock().await.pop_uncommited_entries().await?;
+
+        // Deduplicate: if the same key appears multiple times, only the last
+        // operation matters. This prevents a Set followed by a Delete in the
+        // same batch from leaving an orphaned (un-tombstoned) record on disk.
+        let mut net: HashMap<Key, WalEntry> = HashMap::new();
+        for entry in entries {
+            let key = match &entry {
+                Set(k, _) => k.clone(),
+                Delete(k) => k.clone(),
+            };
+            net.insert(key, entry);
+        }
+
         let mut deleter = DBDeleter::new();
         let mut delete_plan: HashMap<Key, IndexEntry> = HashMap::new();
         {
             let state = self.state.read().await;
-            for entry in &entries {
-                if let Delete(key) = entry
-                    && let Some(index_entry) = state.index.get(key)
-                {
-                    delete_plan.insert(key.clone(), index_entry.clone());
+            for (key, entry) in &net {
+                if let Delete(_) = entry {
+                    if let Some(index_entry) = state.index.get(key) {
+                        delete_plan.insert(key.clone(), index_entry.clone());
+                    }
                 }
             }
         }
         let mut indexes: Vec<(Key, IndexEntry)> = Vec::new();
-        for entry in entries.into_iter() {
+        for entry in net.into_values() {
             match entry {
                 Set(key, field) => {
                     let record = encode(&key, &field);
@@ -215,7 +236,6 @@ impl Database {
                         .map_err(map_file_handler_error)?;
                     deleter.reset();
                 }
-                Commit => unreachable!(),
             }
         }
         self.file.sync_all().await.map_err(map_file_handler_error)?;

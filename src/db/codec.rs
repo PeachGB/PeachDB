@@ -159,6 +159,8 @@ impl Default for DBEncoder {
     }
 }
 
+const CRC_BYTE_SIZE: usize = 4;
+
 /// Convenience wrapper to encode a single key/field record into bytes
 pub fn encode(key: &Key, field: &Field) -> Vec<u8> {
     let payload = bytes_from_field(field);
@@ -166,6 +168,7 @@ pub fn encode(key: &Key, field: &Field) -> Vec<u8> {
         RECORD_MAGIC_NUMBER_BYTE_SIZE
             + KEY_LEN_BYTE_SIZE
             + FIELD_LEN_BYTE_SIZE
+            + CRC_BYTE_SIZE
             + key.len()
             + payload.len(),
     );
@@ -295,11 +298,11 @@ impl<'a> DBDecoder<'a> {
             .read_field_len()?
             .read_crc()?
             .read_key()?
-            .read_field()?
-            .check_crc()?;
+            .read_field()?;
 
-        let (field, _) = field_from_bytes(&self.last_field)?;
         if !self.deleted {
+            self.check_crc()?;
+            let (field, _) = field_from_bytes(&self.last_field)?;
             self.db.insert(Key::from(self.last_key.clone()), field);
         }
         Ok(self)
@@ -375,9 +378,6 @@ impl WalEncoder {
     fn encode_delete_bytes(&mut self) -> &mut Self {
         self.write(&[0x2])
     }
-    fn encode_commit_bytes(&mut self) -> &mut Self {
-        self.write(b"COMMIT--")
-    }
     fn encode_key_len(&mut self, key_len: usize) -> &mut Self {
         self.write(&(key_len as u16).to_le_bytes())
     }
@@ -409,7 +409,6 @@ impl WalEncoder {
         match &entry {
             WalEntry::Set(key, field) => self.encode_set_entry(key, field),
             WalEntry::Delete(key) => self.encode_delete_entry(key),
-            WalEntry::Commit => self.encode_commit_bytes(),
         }
     }
     pub fn finish(&mut self) -> &[u8] {
@@ -458,22 +457,10 @@ impl<'a> WalDecoder<'a> {
         self.cursor.read_exact(&mut key_buf)?;
         Ok(self.wal_push(WalEntry::Delete(Key::from(key_buf))))
     }
-    fn decode_commit_entry(&mut self) -> PDBResult<&mut Self> {
-        let mut magic_number = [0u8; 8];
-        self.cursor.read_exact(&mut magic_number)?;
-        if &magic_number != b"COMMIT--" {
-            return Err(PeachDbError::InvalidMagicBytes);
-        }
-        Ok(self.wal_push(WalEntry::Commit))
-    }
     pub fn decode_wal_entry(&mut self) -> PDBResult<&mut Self> {
         match self.cursor.read_u8()? {
             0x1 => self.decode_set_entry(),
             0x2 => self.decode_delete_entry(),
-            b'C' => {
-                self.cursor.set_position(self.cursor.position() - 1);
-                self.decode_commit_entry()
-            }
             b => Err(PeachDbError::UnknownDtype { byte: b }),
         }
     }
@@ -560,6 +547,7 @@ pub struct IndexFromDBDecoder<'a> {
     last_field_len: u32,
     last_key: Vec<u8>,
     last_index: u64,
+    deleted: bool,
 }
 impl<'a> IndexFromDBDecoder<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
@@ -570,16 +558,23 @@ impl<'a> IndexFromDBDecoder<'a> {
             last_field_len: 0,
             last_key_len: 0,
             last_index: 0,
+            deleted: false,
         }
     }
     fn read_magic_number(&mut self) -> PDBResult<&mut Self> {
         let mut rec_magic_number = [0u8; 4];
         self.cursor.read_exact(&mut rec_magic_number)?;
 
-        if rec_magic_number != RECORD_MAGIC_NUMBER {
-            Err(PeachDbError::InvalidMagicBytes)
-        } else {
-            Ok(self)
+        match rec_magic_number {
+            [0, 0, 0, 0] => {
+                self.deleted = true;
+                Ok(self)
+            }
+            RECORD_MAGIC_NUMBER => {
+                self.deleted = false;
+                Ok(self)
+            }
+            _ => Err(PeachDbError::InvalidMagicBytes),
         }
     }
     fn read_key_len(&mut self) -> PDBResult<&mut Self> {
@@ -634,6 +629,9 @@ impl<'a> IndexFromDBDecoder<'a> {
         Ok(self)
     }
     fn index_push(&mut self) -> PDBResult<&mut Self> {
+        if self.deleted {
+            return Ok(self);
+        }
         if self.last_key.is_empty() {
             return Err(PeachDbError::InvalidIndexEntry);
         }

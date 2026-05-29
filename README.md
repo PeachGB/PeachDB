@@ -151,7 +151,6 @@ Append-only. Entries are written on every `set` / `delete` before the in-memory 
 |---|---|
 | Set | `[0x01][key_len : u16 LE][key bytes][field_len : u32 LE][field bytes]` |
 | Delete | `[0x02][key_len : u16 LE][key bytes]` |
-| Commit | `COMMIT--` (8 ASCII bytes) — not currently written; reserved |
 
 `field bytes` includes the dtype byte as its first byte (same encoding as in `.db`).
 
@@ -265,7 +264,7 @@ server.run().await?;   // loops forever, spawns a task per connection
 ```bash
 cargo build          # compile
 cargo run            # start server on 127.0.0.1:7878
-cargo test           # run all 37 tests
+cargo test           # run all 39 tests
 cargo test <name>    # run a single test by name (substring match)
 cargo clippy         # lint
 ```
@@ -308,12 +307,12 @@ SET and DELETE are bounded by WAL fsync-per-write. On WSL or network filesystems
 
 ## Test suite
 
-37 tests across four files:
+39 tests across four files:
 
 | File | What it covers |
 |---|---|
 | `tests/codec_tests.rs` | Primitive and field roundtrips, record encode/decode |
-| `tests/db_tests.rs` | Set/get/flush/reopen persistence, delete and flush |
+| `tests/db_tests.rs` | Set/get/flush/reopen persistence, delete and flush, tombstone correctness after reopen |
 | `tests/protocol_tests.rs` | Request and response roundtrips for all variants, error cases |
 | `tests/server_tests.rs` | `handle_request` unit tests for all commands; TCP integration tests via real connections |
 

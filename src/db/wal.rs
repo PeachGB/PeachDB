@@ -13,17 +13,6 @@ use tokio::fs::OpenOptions;
 pub enum WalEntry {
     Set(Key, Field),
     Delete(Key),
-    //Action has been commited
-    Commit,
-}
-impl WalEntry {
-    pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            WalEntry::Set(_, _) => &[0x1],
-            WalEntry::Delete(_) => &[0x2],
-            WalEntry::Commit => b"COMMIT--",
-        }
-    }
 }
 
 pub struct Wal {
@@ -74,15 +63,6 @@ impl Wal {
         Ok(())
     }
     pub async fn pop_uncommited_entries(&self) -> PDBResult<Vec<WalEntry>> {
-        let mut uncommited: Vec<WalEntry> = Vec::new();
-        for entry in self.entries.iter().rev() {
-            match entry {
-                WalEntry::Commit => break,
-                WalEntry::Set(_, _) => uncommited.push(entry.clone()),
-                WalEntry::Delete(_) => uncommited.push(entry.clone()),
-            }
-        }
-        uncommited.reverse();
-        Ok(uncommited)
+        Ok(self.entries.clone())
     }
 }
